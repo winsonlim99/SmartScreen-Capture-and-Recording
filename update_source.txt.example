@@ -1,0 +1,3 @@
+# Place update_source.txt beside SmartScreen_Capture.exe on each equipment PC.
+# Replace the following placeholder with your actual Current folder path.
+\\SERVER\SHARE\SmartScreen_Capture\Current

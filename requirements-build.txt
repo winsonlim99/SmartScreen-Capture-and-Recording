@@ -1,0 +1,8 @@
+cx_Freeze>=7
+pillow
+keyboard
+mss
+numpy
+imageio
+imageio-ffmpeg
+opencv-python

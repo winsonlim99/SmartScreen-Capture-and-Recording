@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+Release/
+config.json
+update_source.txt
+update.log
+.update_stage/
+.update_backup/
