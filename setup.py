@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 from cx_Freeze import setup, Executable
-from build_paths import BUILD
+from build_paths import BUILD, BUILD_WORK, METADATA
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "SmartScreen Capture & Recording"
@@ -107,11 +107,28 @@ if not IS_X86:
     except ImportError as exc:
         raise SystemExit("x64 WGC dependency missing: run C:\\Python313-64\\python.exe -m pip install windows-capture==2.0.1") from exc
 
+# setuptools runs egg_info during build_exe. Keep that output outside the source
+# tree as well: long/nested Windows source paths can fail before freezing starts.
+# egg_base must already exist when setuptools finalizes its options.
+try:
+    METADATA.mkdir(parents=True, exist_ok=True)
+except OSError as exc:
+    raise SystemExit(
+        f"Cannot create build metadata directory: {METADATA}\n"
+        "Set SMARTSCREEN_OUTPUT_ROOT to a short, writable local folder and retry.\n"
+        f"Details: {exc}"
+    ) from exc
+print(f"Build metadata directory: {METADATA}", flush=True)
+
 setup(
     name=APP_NAME,
     version=APP_VERSION,
     description="SmartScreen screenshot and recording utility",
-    options={"build_exe": build_options},
+    options={
+        "build": {"build_base": str(BUILD_WORK)},
+        "egg_info": {"egg_base": str(METADATA)},
+        "build_exe": build_options,
+    },
     executables=[Executable(
         script=str(SOURCE),
         base="gui",

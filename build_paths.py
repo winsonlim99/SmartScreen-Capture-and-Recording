@@ -11,4 +11,6 @@ if ARCH not in ("x86", "x64"):
 BASE = Path(os.environ.get("SMARTSCREEN_OUTPUT_ROOT") or
             (Path(os.environ.get("LOCALAPPDATA") or str(Path.home())) / "SmartScreenBuild"))
 BUILD = BASE / "build" / ("SmartScreen_Capture_V1_0_x86" if ARCH == "x86" else "SmartScreen_Capture_V1_0")
+BUILD_WORK = BASE / "work" / ARCH
+METADATA = BASE / "metadata" / ARCH
 RELEASE_ROOT = BASE / "Release"

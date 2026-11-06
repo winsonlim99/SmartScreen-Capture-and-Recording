@@ -3,6 +3,8 @@
 Windows desktop screenshot and MP4 recording utility. Current source: build
 1.0.6, based on the supplied 1.0.5 WGC/window-selection archive.
 See [selector fix and validation](README_Selector_Fix_1_0_6.md).
+For the `.egg-info` directory build error, see the
+[metadata build fix](README_Build_Metadata_Fix.md).
 
 Supports global screenshot shortcuts, full-screen or fixed-region recording,
 video segmentation, and a shared-folder update channel.
