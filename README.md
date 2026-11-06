@@ -1,7 +1,8 @@
 # SmartScreen Capture and Recording
 
-Windows desktop screenshot and MP4 recording utility, imported from
-`SmartScreen_Capture_Recording_V1_0_Fixed_Region_cxFreeze.zip`.
+Windows desktop screenshot and MP4 recording utility. Current source: build
+1.0.6, based on the supplied 1.0.5 WGC/window-selection archive.
+See [selector fix and validation](README_Selector_Fix_1_0_6.md).
 
 Supports global screenshot shortcuts, full-screen or fixed-region recording,
 video segmentation, and a shared-folder update channel.
@@ -15,10 +16,14 @@ PC architecture. From this directory:
 py -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-build.txt
 .venv\Scripts\python SmartScreen_Capture_V1_0.py
+.venv\Scripts\python -m pip install windows-capture==2.0.1
 .venv\Scripts\python setup.py build
 .venv\Scripts\python make_release.py
 ```
 
+These commands target x64. For the architecture-specific build and DLL checks, use
+`Build_cxFreeze_x64.bat` or `Build_cxFreeze_x86.bat` (their Python paths must match
+your installations). Selected Window recording requires x64.
 Copy the entire build output directory when distributing the application.
 See [original instructions](README.txt), [region selection](README_Fixed_Region.txt),
 and [update deployment](README_AutoUpdate.txt).
@@ -29,7 +34,7 @@ See [CODE_REVIEW.md](CODE_REVIEW.md) for fixes, validation, and suggested
 improvements. Run the Python regressions with the environment's Python:
 
 ```powershell
-.venv\Scripts\python -m unittest -v test_recording
+.venv\Scripts\python -m unittest -v test_region_selector test_recording test_window_capture
 .venv\Scripts\python test_update.py
 powershell -NoProfile -File updater/Test_Update_Abort.ps1
 ```

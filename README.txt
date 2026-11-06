@@ -16,7 +16,7 @@ BUILD (WINDOWS)
 5. Click Check Recorder before actual use. Test 720p / 10 FPS first.
 
 NEW RECORDING CONTROLS
-- Hide to Taskbar uses normal Windows minimization. Restore from taskbar.
+- The dedicated Hide to Taskbar button was removed. Normal Windows minimize is available from the title bar.
 - Red REC label, elapsed timer, active filename, current segment number and size.
 - Windows taskbar icon displays a red indicator while recording; taskbar flashes briefly
   after the first captured video frame. No popup obscures equipment HMI.
@@ -50,11 +50,9 @@ CONFIG FILE LOCATION
 - The taskbar icon shows a red REC indicator and briefly flashes on recording start;
   the running timer/filename are displayed inside the window when restored.
 
-TASKBAR MINIMIZATION FIX
-- Hide to Taskbar now defers Tk iconify until the button event has finished.
-- Windows fallback resolves the outer top-level HWND and calls ShowWindowAsync(SW_MINIMIZE).
-- The program checks the actual minimized state rather than assuming success.
-- User-initiated minimization takes precedence over automatic restore callbacks.
-- Restore from the Windows taskbar; screenshot and video processing continue.
+WINDOW MINIMIZATION
+- Use the normal Windows title-bar minimize control when needed.
+- The "Minimize before capture / recording" checkbox remains available.
+- Recording continues while the application is minimized.
+- Automatic minimize/restore behavior for capture and recording remains unchanged.
 - On failure, inspect %APPDATA%\screenshot_app\capture_v10.log.
-- Do not confuse Hide to Taskbar with system-tray hiding: the taskbar button remains.

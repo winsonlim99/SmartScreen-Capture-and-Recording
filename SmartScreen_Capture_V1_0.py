@@ -2,7 +2,7 @@
 """
 screenshot_app.py
 
-SmartScreen Capture & Recording V1.0.0 — compatibility, reliability and optional recording preview.
+SmartScreen Capture & Recording V1.0 — compatibility, reliability and optional recording preview.
 
 Features:
 - All previous features retained.
@@ -12,7 +12,7 @@ Features:
 - DPI awareness enabled on Windows to reduce scaling / black-capture issues.
 - Config persists monitor selection and the Select-monitor checkbox.
 - Attempts to capture the selected monitor; falls back gracefully to combined virtual screen capture if needed.
-- New: Basic screen recording support (MP4) with selectable FPS and resolution (720p / 1080p).
+- New: Basic screen recording support (MP4) with selectable FPS and resolution (Native / 1080p / 1440p).
   - Independently detects imageio/FFmpeg and OpenCV; tries H.264 then OpenCV MP4 codecs.
   - Recording is run on a background thread; Start/Stop buttons added.
   - Recording settings (fps, resolution) are persisted to config.
@@ -260,7 +260,7 @@ class ScreenshotApp:
     FK_KEYS = [f"F{i}" for i in range(1, 13)]
 
     ABOUT_TEXT = (
-        "SmartScreen Capture & Recording — v1.0.0\n\n"
+        "SmartScreen Capture & Recording — v1.0 (build 1.0.6)\n\n"
         "Fast, configurable screenshot capture tool.\n\n"
         "- Double-press triggers: Ctrl x 2 | Shift x 2 | F1–F12 x 2\n"
         "For global hotkeys to work reliably on Windows, run the program as Administrator.\n\n\n"
@@ -272,7 +272,7 @@ class ScreenshotApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("SmartScreen Capture & Recording V1.0.0")
+        self.root.title("SmartScreen Capture & Recording V1.0")
         # Allow resizing (maximizing) of the window
         self.root.resizable(True, True)
 
@@ -327,10 +327,12 @@ class ScreenshotApp:
         self.monitor_list_var = tk.StringVar()
         self.scale_var = tk.StringVar(value="1.0x")
         self.rec_fps_var = tk.IntVar(value=10)
-        self.rec_res_var = tk.StringVar(value="720p")
+        self.rec_res_var = tk.StringVar(value="Native")
         self.show_preview_var = tk.BooleanVar(value=False)
         self.record_area_mode_var = tk.StringVar(value='Full Screen')
         self.record_region = None  # absolute desktop pixels: left, top, width, height
+        self.selected_window_hwnd = None  # HWND is session-local and never persisted
+        self.selected_window_title = ''
         self.record_area_summary = tk.StringVar(value='Full screen')
         self.record_stats_var = tk.StringVar(value="Standby · 00:00:00 · 0 frames")
         self.record_segment_var = tk.StringVar(value="1 GB/file · No active recording")
@@ -435,24 +437,27 @@ class ScreenshotApp:
         self.capture_btn.grid(row=r,column=0,sticky="ew",pady=(0,7));r+=1
         ttk.Separator(left).grid(row=r,column=0,sticky="ew",pady=5);r+=1
         ttk.Label(left,text="VIDEO RECORDING",style="Section.TLabel").grid(row=r,column=0,sticky="w",pady=(0,4));r+=1
-        # Fixed recording area: draw on screen, persist absolute desktop coordinates.
+        # Recording mode and associated selection actions in two readable rows.
         region_row=ttk.Frame(left,style="Panel.TFrame")
-        region_row.grid(row=r,column=0,sticky="ew",pady=(0,5));r+=1
-        ttk.Label(region_row,text="Area",style="Body.TLabel").pack(side="left",padx=(0,6))
-        self.area_mode_combo=ttk.Combobox(region_row,values=["Full Screen","Custom Region"],
-                        state="readonly",width=14,textvariable=self.record_area_mode_var)
-        self.area_mode_combo.pack(side="left",padx=(0,6))
+        region_row.grid(row=r,column=0,sticky="ew",pady=(0,3));r+=1
+        ttk.Label(region_row,text="Area",style="Body.TLabel").pack(side="left",padx=(0,8))
+        self.area_mode_combo=ttk.Combobox(region_row,
+                values=["Full Screen","Custom Region","Selected Window"],
+                state="readonly",width=19,textvariable=self.record_area_mode_var)
+        self.area_mode_combo.pack(side="left")
         self.area_mode_combo.bind("<<ComboboxSelected>>",self._record_area_changed)
-        self.select_region_btn=ttk.Button(region_row,text="Select Area",command=self.select_record_area)
-        self.select_region_btn.pack(side="left",padx=(0,5))
-        self.show_region_btn=ttk.Button(region_row,text="Show Area",command=self.show_record_area)
+        self.selection_buttons=ttk.Frame(left,style="Panel.TFrame")
+        self.selection_buttons.grid(row=r,column=0,sticky="ew",pady=(0,3));r+=1
+        self.select_region_btn=ttk.Button(self.selection_buttons,text="Select Area",command=self.select_record_area)
+        self.select_region_btn.pack(side="left",padx=(0,7))
+        self.show_region_btn=ttk.Button(self.selection_buttons,text="Show Area",command=self.show_record_area)
         self.show_region_btn.pack(side="left")
         ttk.Label(left,textvariable=self.record_area_summary,style="Body.TLabel",wraplength=515).grid(
             row=r,column=0,sticky="w",pady=(0,5));r+=1
         row=ttk.Frame(left,style="Panel.TFrame");row.grid(row=r,column=0,sticky="ew",pady=(0,5));r+=1
         ttk.Label(row,text="Resolution",style="Body.TLabel").pack(side="left",padx=(0,5))
         self.rec_res_combo=ttk.Combobox(row,textvariable=self.rec_res_var,
-                                         values=["720p","1080p"],state="readonly",width=7)
+                                         values=["Native","1080p","1440p"],state="readonly",width=9)
         self.rec_res_combo.pack(side="left",padx=(0,10))
         ttk.Label(row,text="FPS",style="Body.TLabel").pack(side="left",padx=(0,4))
         self.rec_fps_spin=tk.Spinbox(row,from_=5,to=60,textvariable=self.rec_fps_var,width=5,justify="center",font=("Segoe UI",11))
@@ -461,7 +466,7 @@ class ScreenshotApp:
         self.video_delay_spin=tk.Spinbox(row,from_=0,to=60,textvariable=self.video_delay_seconds_var,
                                          width=5,justify="center",font=("Segoe UI",11))
         self.video_delay_spin.pack(side="left")
-        self.record_quality_var=tk.StringVar(value="720p · 10 FPS")
+        self.record_quality_var=tk.StringVar(value="Native · 10 FPS")
         self.rec_res_var.trace_add("write",lambda *_:self._update_quality_label())
         self.rec_fps_var.trace_add("write",lambda *_:self._update_quality_label())
         row=ttk.Frame(left,style="Panel.TFrame");row.grid(row=r,column=0,sticky="ew",pady=(0,4));r+=1
@@ -484,7 +489,6 @@ class ScreenshotApp:
         row=ttk.Frame(left,style="Panel.TFrame");row.grid(row=r,column=0,sticky="ew",pady=(0,3));r+=1
         ttk.Button(row,text="Check Recorder",command=self.check_recording).pack(side="left",padx=(0,10))
         ttk.Button(row,text="Save Config",command=self.save_config).pack(side="left",padx=(0,10))
-        ttk.Button(row,text="Hide to Taskbar",command=self.hide_to_taskbar).pack(side="left")
         ttk.Checkbutton(left,text="Minimize before capture / recording",
                         variable=self.hide_during_capture_var).grid(row=r,column=0,sticky="w",pady=(0,2));r+=1
 
@@ -517,8 +521,8 @@ class ScreenshotApp:
         ttk.Label(foot, textvariable=self.status_var, style="Subtitle.TLabel", wraplength=900).pack(side="left")
         # 550px control pane; the preview expands with available window width.
         screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry(f"{min(1280, max(990, screen_w - 24))}x{min(735, max(630, screen_h - 50))}")
-        self.root.minsize(990, 650)
+        self.root.geometry(f"{min(1280, max(990, screen_w - 24))}x{min(810, max(630, screen_h - 60))}")
+        self.root.minsize(990, 849)
         self.root.after(250, self._refresh_preview)
 
         # Double-press requires a full key-up between presses; monotonic clock.
@@ -764,10 +768,6 @@ class ScreenshotApp:
             logging.exception('Taskbar minimize verification failed')
             self._set_status('Unable to minimize to taskbar; see capture log.')
 
-    def hide_to_taskbar(self):
-        """User-initiated minimize; async capture must not restore the window."""
-        self._minimize_to_taskbar(manual=True)
-
     def _on_root_map(self, event):
         """Clear manual-hide mode only after a genuine user window restore."""
         if event.widget is not self.root or self._minimize_pending:
@@ -816,7 +816,7 @@ class ScreenshotApp:
                   'Stopped':'#58677a'}
         self.rec_indicator.configure(text=('●  REC — RECORDING' if active else
                                            '●  ' + phase.upper()), fg=colors.get(phase, '#58677a'))
-        self.root.title(('● REC | ' if active else '') + 'SmartScreen Capture & Recording V1.0.0')
+        self.root.title(('● REC | ' if active else '') + 'SmartScreen Capture & Recording V1.0')
         try:
             if self._rec_icon and self._normal_icon:
                 self.root.iconphoto(False, self._rec_icon if active else self._normal_icon)
@@ -922,7 +922,7 @@ class ScreenshotApp:
 
         if MSS_AVAILABLE:
             try:
-                with mss.mss() as s:
+                with mss.MSS() as s:
                     # s.monitors[0] is the virtual combined screen; s.monitors[1:] are physical monitors
                     monitors = s.monitors
                     # first entry: All (virtual)
@@ -1003,6 +1003,9 @@ class ScreenshotApp:
     def capture_now(self):
         # The GUI is minimized before capture, avoiding a screenshot of this application.
         # Delay also gives operators a chance to bring the equipment HMI to the front.
+        if getattr(self, '_selection_active', False):
+            self._set_status('Finish or cancel the current selection first.')
+            return
         if self._screenshot_running:
             self._set_status("Screenshot already pending; wait for completion.")
             return
@@ -1157,7 +1160,7 @@ class ScreenshotApp:
         # Capture using mss if possible and if user selected a specific monitor
         try:
             if MSS_AVAILABLE:
-                with mss.mss() as s:
+                with mss.MSS() as s:
                     monitors = s.monitors
                     if use_monitor_select and selected_monitor_idx != 0:
                         # If requested monitor index exists, capture it
@@ -1490,7 +1493,7 @@ class ScreenshotApp:
                     except (TypeError, ValueError):
                         self.record_region=None
                 self.record_area_mode_var.set(cfg.get('record_area_mode', 'Full Screen')
-                         if cfg.get('record_area_mode') in ('Full Screen', 'Custom Region') else 'Full Screen')
+                         if cfg.get('record_area_mode') in ('Full Screen', 'Custom Region', 'Selected Window') else 'Full Screen')
                 # load recording settings
                 try:
                     fps = int(cfg.get("recording_fps", 15))
@@ -1500,13 +1503,13 @@ class ScreenshotApp:
                 except Exception:
                     self.rec_fps_var.set(15)
                 try:
-                    res = cfg.get("recording_resolution", "720p")
-                    if res in ("720p", "1080p"):
+                    res = cfg.get("recording_resolution", "Native")
+                    if res in ("Native", "1080p", "1440p"):
                         self.rec_res_var.set(res)
                     else:
-                        self.rec_res_var.set("720p")
+                        self.rec_res_var.set("Native")
                 except Exception:
-                    self.rec_res_var.set("720p")
+                    self.rec_res_var.set("Native")
                 # ensure spin state matches checkbox
                 if self.use_delay_var.get():
                     self.delay_spin.config(state="normal")
@@ -1536,7 +1539,7 @@ class ScreenshotApp:
                 self.scale_var.set("1.0x")
                 # recording defaults
                 self.rec_fps_var.set(15)
-                self.rec_res_var.set("720p")
+                self.rec_res_var.set("Native")
         except Exception as e:
             self._set_status(f"Failed to load config: {e}", error=True)
 
@@ -1599,21 +1602,362 @@ class ScreenshotApp:
 
     # ---------- Fixed recording region ----------
     def _record_area_changed(self, event=None):
-        custom = self.record_area_mode_var.get() == 'Custom Region'
-        self.select_region_btn.configure(state='normal' if custom else 'disabled')
-        self.show_region_btn.configure(state='normal' if custom and self.record_region else 'disabled')
-        if not custom:
-            self.record_area_summary.set('Full selected monitor / desktop')
-        elif self.record_region:
+        mode = self.record_area_mode_var.get()
+        custom = mode == 'Custom Region'
+        window = mode == 'Selected Window'
+        self.select_region_btn.configure(
+            text='Select Window' if window else 'Select Area',
+            command=self.select_record_window if window else self.select_record_area,
+            state='normal' if custom or window else 'disabled')
+        self.show_region_btn.configure(
+            text='Show Window' if window else 'Show Area',
+            command=self.show_record_window if window else self.show_record_area,
+            state='normal' if (window and self.selected_window_hwnd) or
+                  (custom and self.record_region) else 'disabled')
+        if window:
+            self.record_area_summary.set(
+                f'Window: {self.selected_window_title} (independent HMI capture (WGC x64))' if self.selected_window_hwnd
+                else 'No window selected — click Select Window')
+        elif custom and self.record_region:
             x, y, w, h = self.record_region
             self.record_area_summary.set(f'Region: X={x}, Y={y}  ·  {w} × {h} px')
-        else:
+        elif custom:
             self.record_area_summary.set('No region selected — click Select Area')
+        else:
+            self.record_area_summary.set('Full selected monitor / desktop')
+
+    @staticmethod
+    def _window_rect(hwnd):
+        """Position of a live, nonminimized top-level Windows application window."""
+        if os.name != 'nt':
+            raise RuntimeError('Selected Window requires Windows')
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        user32.IsWindow.argtypes = [wintypes.HWND]
+        user32.IsWindow.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        if not hwnd or not user32.IsWindow(hwnd):
+            raise RuntimeError('Selected window has closed. Recording stopped.')
+        if user32.IsIconic(hwnd):
+            raise RuntimeError('Selected window is minimized; recording stopped.')
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            raise RuntimeError('Cannot read the selected window position')
+        # Windows' GetWindowRect may include invisible resize borders, making
+        # a maximized window appear outside the physical monitor. DWM reports
+        # its visible border bounds when available (Vista or later).
+        try:
+            dwm = ctypes.WinDLL('dwmapi', use_last_error=True)
+            dwm.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD,
+                                                  ctypes.c_void_p, wintypes.DWORD]
+            dwm.DwmGetWindowAttribute.restype = ctypes.c_long
+            visible = wintypes.RECT()
+            if dwm.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(visible),
+                                         ctypes.sizeof(visible)) == 0:
+                if visible.right > visible.left and visible.bottom > visible.top:
+                    rect = visible
+        except (AttributeError, OSError):
+            pass
+        x, y = rect.left, rect.top
+        w, h = rect.right - x, rect.bottom - y
+        if w < 32 or h < 32:
+            raise RuntimeError('Selected window dimensions are too small')
+        return (x, y, w, h)
+
+    @staticmethod
+    def _window_at_point(x, y, ignore_hwnd=0):
+        """Hit-test visible external top-level HWNDs in desktop Z-order.
+
+        The fullscreen Tk selection overlay covers the desktop, so Windows'
+        WindowFromPoint would report that overlay. EnumWindows + process-ID
+        exclusion avoids selecting SmartScreen itself or any Tk popup.
+        """
+        if os.name != 'nt':
+            raise RuntimeError('Window selection is supported on Windows only')
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        user32.GetWindowTextLengthW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        selected = []
+        own_pid = os.getpid()
+
+        def visit(hwnd, _):
+            if hwnd == ignore_hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == own_pid:
+                return True
+            title_length = user32.GetWindowTextLengthW(hwnd)
+            if title_length == 0:
+                return True  # desktop, anonymous child and utility windows
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+            if not (rect.left <= x < rect.right and rect.top <= y < rect.bottom):
+                return True
+            if rect.right - rect.left < 32 or rect.bottom - rect.top < 32:
+                return True
+            title = ctypes.create_unicode_buffer(title_length + 1)
+            user32.GetWindowTextW(hwnd, title, title_length + 1)
+            if title.value.strip():
+                selected.append((int(hwnd), title.value.strip()))
+                return False  # EnumWindows is ordered front-to-back
+            return True
+
+        cb = callback_type(visit)
+        user32.EnumWindows(cb, 0)
+        return selected[0] if selected else None
+
+    def _begin_record_selection(self):
+        """Own one selector session and remember the visible window's WM state."""
+        if getattr(self, '_selection_active', False):
+            self._set_status('Finish or cancel the current selection first.')
+            return False
+        if self._screenshot_running:
+            self._set_status('Wait for the pending screenshot before selecting an area.')
+            return False
+        previous = self.root.state()
+        self._selector_restore_state = 'zoomed' if previous == 'zoomed' else 'normal'
+        self._selector_overlay = None
+        self._selector_job = None
+        # An explicit selection action supersedes an earlier minimize request.
+        self._manual_taskbar_hide = False
+        self._minimize_pending = False
+        if self._taskbar_minimize_job is not None:
+            self.root.after_cancel(self._taskbar_minimize_job)
+            self._taskbar_minimize_job = None
+        self._selection_active = True
+        try:
+            self.root.withdraw()
+        except Exception:
+            self._restore_after_record_selection()
+            raise
+        return True
+
+    def _restore_after_record_selection(self):
+        """Close the overlay exactly once and always make the application reachable."""
+        if not getattr(self, '_selection_active', False):
+            return
+        self._selection_active = False
+        if self._selector_job is not None:
+            try:
+                self.root.after_cancel(self._selector_job)
+            except tk.TclError:
+                pass
+            self._selector_job = None
+        overlay, self._selector_overlay = self._selector_overlay, None
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except tk.TclError:
+                pass
+        if self._closing:
+            return
+        self._manual_taskbar_hide = False
+        self._minimize_pending = False
+        self.root.deiconify()
+        if self._selector_restore_state == 'zoomed':
+            self.root.state('zoomed')
+        self.root.lift()
+        self.root.focus_set()
+
+    def select_record_window(self):
+        if self._recording or self._video_countdown_job is not None:
+            self._set_status('Stop recording before selecting another window.')
+            return
+        if os.name != 'nt':
+            self._set_status('Selected Window requires Windows.', error=True)
+            return
+        if self._begin_record_selection():
+            self._selector_job = self.root.after(350, self._create_window_selector)
+
+    def _create_window_selector(self):
+        """Highlight the HWND under the cursor on a frozen desktop snapshot.
+
+        A single periodic mouse-position check is used; no global mouse hook,
+        new thread, or second screen grab is required. The overlay itself is
+        excluded via process-ID filtering during window hit-testing.
+        """
+        self._selector_job = None
+        if self._closing or not getattr(self, '_selection_active', False):
+            return
+        overlay = None
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+            user32.GetCursorPos.restype = wintypes.BOOL
+            bounds = self._record_area_bounds()
+            left, top, width, height = bounds
+            background = self._capture_region_pixels(bounds)
+            overlay = tk.Toplevel(self.root)
+            self._selector_overlay = overlay
+            overlay.overrideredirect(True)
+            overlay.attributes('-topmost', True)
+            overlay.geometry(f'{width}x{height}{left:+d}{top:+d}')
+            canvas = tk.Canvas(overlay, highlightthickness=0, cursor='crosshair')
+            canvas.pack(fill='both', expand=True)
+            preview = ImageTk.PhotoImage(background)
+            canvas.create_image(0, 0, image=preview, anchor='nw')
+            canvas.preview_image = preview
+
+            # A non-interactive outline shows the detected window boundaries.
+            # The source desktop snapshot is taken before the overlay appears.
+            outline = canvas.create_rectangle(0, 0, 0, 0,
+                        outline='#27e677', width=4, state='hidden')
+            bar = canvas.create_rectangle(0, 0, width, 39,
+                        fill='#172335', outline='')
+            instruction = canvas.create_text(width // 2, 19,
+                        text='Move mouse: Highlight window   |   Left-click: Select   |   Esc: Cancel',
+                        fill='white', font=('Segoe UI', 11, 'bold'))
+            name_text = canvas.create_text(12, 52, anchor='nw',
+                        text='Move mouse onto the HMI window',
+                        fill='#39f28b', font=('Segoe UI', 12, 'bold'))
+            state = {'hover': None, 'closed': False, 'after': None}
+
+            def close(selection=None, error=None):
+                if state['closed']:
+                    return
+                state['closed'] = True
+                if state['after'] is not None:
+                    try:
+                        overlay.after_cancel(state['after'])
+                    except tk.TclError:
+                        pass
+                self._restore_after_record_selection()
+                if selection:
+                    try:
+                        rect = self._window_rect(selection[0])
+                        if not self._validate_region(rect, bounds):
+                            raise ValueError('Window is outside the selected monitor. Choose All monitors or move the window completely onto the screen.')
+                        self.selected_window_hwnd, self.selected_window_title = selection
+                        self._record_area_changed()
+                        self.save_config()
+                        if not self._recording:
+                            self._set_record_state('Ready')
+                        self._set_status(f'Window selected: {selection[1]} ({rect[2]} × {rect[3]}). Independent WGC capture requires the x64 build.')
+                    except Exception as exc:
+                        self._set_status(f'Cannot select window: {exc}', error=True)
+                elif error:
+                    self._set_status(f'Window selection failed: {error}', error=True)
+                else:
+                    self._set_status('Window selection cancelled.')
+
+            def poll():
+                if state['closed'] or self._closing:
+                    return
+                try:
+                    point = wintypes.POINT()
+                    if not user32.GetCursorPos(ctypes.byref(point)):
+                        raise OSError('GetCursorPos failed')
+                    hit = self._window_at_point(point.x, point.y, overlay.winfo_id())
+                    if hit:
+                        wx, wy, ww, wh = self._window_rect(hit[0])
+                        # Clip only the highlight to the selected desktop bounds.
+                        x1 = max(wx, left) - left
+                        y1 = max(wy, top) - top
+                        x2 = min(wx + ww, left + width) - left
+                        y2 = min(wy + wh, top + height) - top
+                        if x2 > x1 and y2 > y1:
+                            canvas.coords(outline, x1, y1, x2, y2)
+                            canvas.itemconfigure(outline, state='normal')
+                            visible_name = hit[1][:85]
+                            canvas.itemconfigure(name_text,
+                                text=f'{visible_name}   ({ww} × {wh})')
+                            state['hover'] = hit
+                        else:
+                            state['hover'] = None
+                            canvas.itemconfigure(outline, state='hidden')
+                    else:
+                        state['hover'] = None
+                        canvas.itemconfigure(outline, state='hidden')
+                        canvas.itemconfigure(name_text, text='No selectable window here')
+                except Exception as exc:
+                    logging.debug('Window hover check failed: %s', exc)
+                    state['hover'] = None
+                    canvas.itemconfigure(outline, state='hidden')
+                state['after'] = overlay.after(80, poll)
+
+            def on_click(event):
+                # Refresh the hit-test at click position in case of quick motion.
+                try:
+                    hit = self._window_at_point(left + event.x, top + event.y,
+                                                overlay.winfo_id()) or state['hover']
+                    if hit:
+                        close(hit)
+                    else:
+                        canvas.itemconfigure(name_text,
+                                             text='No application found — move mouse onto an HMI window')
+                except Exception as exc:
+                    logging.exception('Window selection click failed')
+                    close(error=exc)
+
+            canvas.bind('<ButtonRelease-1>', on_click)
+            overlay.bind('<Escape>', lambda e: close())
+            canvas.bind('<Escape>', lambda e: close())
+            overlay.protocol('WM_DELETE_WINDOW', lambda: close())
+            overlay.focus_force()
+            canvas.focus_set()
+            poll()
+        except Exception as exc:
+            logging.exception('Window selector failed')
+            if overlay is not None:
+                try:
+                    overlay.destroy()
+                except tk.TclError:
+                    pass
+            self._restore_after_record_selection()
+            self._set_status(f'Window selector failed: {exc}', error=True)
+
+    def show_record_window(self):
+        if not self.selected_window_hwnd:
+            self._set_status('Click Select Window first.')
+            return
+        try:
+            x, y, w, h = self._window_rect(self.selected_window_hwnd)
+            if self._recording:
+                self._set_status('Show Window is disabled while recording.')
+                return
+            # Four thin floating borders instead of a filled panel obscuring the HMI.
+            borders = []
+            for bx, by, bw, bh in ((x, y, w, 5), (x, y+h-5, w, 5),
+                                   (x, y, 5, h), (x+w-5, y, 5, h)):
+                mark = tk.Toplevel(self.root)
+                mark.overrideredirect(True)
+                mark.attributes('-topmost', True)
+                mark.configure(bg='#22dc70')
+                mark.geometry(f'{bw}x{bh}{bx:+d}{by:+d}')
+                borders.append(mark)
+            for mark in borders:
+                mark.after(1400, mark.destroy)
+            self._set_status(f'Showing window outline: {self.selected_window_title} ({w} × {h})')
+        except Exception as exc:
+            self._set_status(f'Window no longer available: {exc}', error=True)
 
     def _record_area_bounds(self):
         """Use the selected physical monitor, or the complete virtual desktop."""
         if MSS_AVAILABLE:
-            with mss.mss() as grabber:
+            with mss.MSS() as grabber:
                 monitors = grabber.monitors
                 idx = 0
                 if self.use_monitor_select_var.get():
@@ -1654,7 +1998,7 @@ class ScreenshotApp:
     def _capture_region_pixels(region):
         x, y, w, h = region
         if MSS_AVAILABLE:
-            with mss.mss() as grabber:
+            with mss.MSS() as grabber:
                 frame = grabber.grab({'left': x, 'top': y, 'width': w, 'height': h})
                 return Image.frombytes('RGB', frame.size, frame.rgb)
         return ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
@@ -1670,17 +2014,18 @@ class ScreenshotApp:
         except Exception as exc:
             self._set_status(f'Cannot enumerate monitors: {exc}', error=True)
             return
-        self._region_restore_on_close = self.root.state() == 'normal' and not self._manual_taskbar_hide
-        self.root.withdraw()  # selector must not photograph the SmartScreen window
-        self.root.after(350, lambda: self._create_region_selector(bounds))
+        if self._begin_record_selection():
+            self._selector_job = self.root.after(350, lambda: self._create_region_selector(bounds))
 
     def _create_region_selector(self, bounds):
-        if self._closing:
+        self._selector_job = None
+        if self._closing or not getattr(self, '_selection_active', False):
             return
         left, top, width, height = bounds
         try:
             background = self._capture_region_pixels(bounds)
             overlay = tk.Toplevel(self.root)
+            self._selector_overlay = overlay
             overlay.overrideredirect(True)
             overlay.attributes('-topmost', True)
             overlay.geometry(f'{width}x{height}{left:+d}{top:+d}')
@@ -1690,7 +2035,7 @@ class ScreenshotApp:
             canvas.create_image(0, 0, image=preview, anchor='nw')
             canvas.preview_image = preview
             canvas.create_rectangle(0,0,width,height,fill='#172335',stipple='gray25',outline='')
-            canvas.create_text(width//2,24,text='Drag to select recording area · Enter: Confirm · Esc: Cancel',
+            canvas.create_text(width//2,24,text='Left-drag: Select · Right-click: Confirm · Esc: Cancel',
                                fill='white',font=('Segoe UI',13,'bold'))
             state = {'start': None, 'rect': None, 'coords': None}
 
@@ -1723,10 +2068,12 @@ class ScreenshotApp:
                     self._set_status('Selection must be at least 32 × 32 pixels.')
 
             def finish(accept=False):
+                # Canvas key events also reach their toplevel bindtag. Stop
+                # propagation and guard repeat clicks before saving settings.
+                if not self._selection_active:
+                    return 'break'
                 coords=state['coords'] if accept else None
-                overlay.destroy()
-                if self._region_restore_on_close and not self._manual_taskbar_hide:
-                    self.root.deiconify()
+                self._restore_after_record_selection()
                 if coords:
                     self.record_region=coords
                     self._record_area_changed()
@@ -1736,22 +2083,24 @@ class ScreenshotApp:
                     self._set_status('Drag a rectangle first; selection not changed.')
                 else:
                     self._set_status('Recording-area selection cancelled.')
+                return 'break'
 
+            overlay.protocol('WM_DELETE_WINDOW', lambda: finish(False))
             canvas.bind('<ButtonPress-1>',down)
             canvas.bind('<B1-Motion>',move)
             canvas.bind('<ButtonRelease-1>',up)
             overlay.bind('<Escape>',lambda e:finish(False))
+            canvas.bind('<ButtonRelease-3>',lambda e:finish(True))
             overlay.bind('<Return>',lambda e:finish(True))
             overlay.bind('<Control-Return>',lambda e:finish(True))
             canvas.bind('<Escape>',lambda e:finish(False))
             canvas.bind('<Return>',lambda e:finish(True))
             overlay.focus_force()
             canvas.focus_set()
-            # Enter confirms; Escape cancels without modifying the saved region.
+            # Right-click confirms. Enter remains an accessible fallback.
         except Exception as exc:
             logging.exception('Area selector failed')
-            if self._region_restore_on_close:
-                self.root.deiconify()
+            self._restore_after_record_selection()
             self._set_status(f'Area selector failed: {exc}', error=True)
 
     def show_record_area(self):
@@ -1789,7 +2138,8 @@ class ScreenshotApp:
                     monitor_name=self.monitor_list_var.get(),
                     monitors=list(self._monitors_cache),
                     area_mode=self.record_area_mode_var.get(),
-                    region=tuple(self.record_region) if self.record_region else None)
+                    region=tuple(self.record_region) if self.record_region else None,
+                    window_hwnd=self.selected_window_hwnd if self.record_area_mode_var.get() == 'Selected Window' else None)
 
     def check_recording(self):
         """Run a short encoder test; detailed results appear in app-data log."""
@@ -1816,6 +2166,9 @@ class ScreenshotApp:
         self._post_gui(messagebox.showinfo, 'Recording Compatibility', result)
 
     def start_recording(self):
+        if getattr(self, '_selection_active', False):
+            self._set_status('Finish or cancel the current selection first.')
+            return
         if self._video_countdown_job is not None or self._recording:
             return
         try:
@@ -1855,6 +2208,18 @@ class ScreenshotApp:
             self._set_status(f'Invalid recording settings: {exc}')
             self._record_start_failed()
             return
+        if opts['area_mode'] == 'Selected Window':
+            try:
+                from wgc_window_capture import validate_window_capture
+                validate_window_capture(opts['window_hwnd'])
+                selected_bounds = self._window_rect(opts['window_hwnd'])
+                monitor_bounds = self._record_area_bounds()
+                if not self._validate_region(selected_bounds, monitor_bounds):
+                    raise ValueError('Selected window is outside the active monitor. Choose All monitors or reposition the HMI.')
+            except Exception as exc:
+                self._set_status(f'Select Window before recording: {exc}', error=True)
+                self._record_start_failed()
+                return
         if opts['area_mode'] == 'Custom Region':
             try:
                 bounds = self._record_area_bounds()
@@ -1888,7 +2253,7 @@ class ScreenshotApp:
             self._record_start_failed()
             return
         opts['path'] = path
-        opts['size'] = (1920, 1080) if opts['resolution'] == '1080p' else (1280, 720)
+        opts['size'] = {'Native': None, '1080p': (1920, 1080), '1440p': (2560, 1440)}.get(opts['resolution'])
         with self._record_lock:
             if self._recording:
                 try:
@@ -1966,6 +2331,7 @@ class ScreenshotApp:
     def _record_worker(self, opts):
         path = opts['path']
         writer, grabber = None, None
+        window_capture = None
         frames = 0
         part_frames = 0
         problem = None
@@ -1974,14 +2340,18 @@ class ScreenshotApp:
         finalized_paths = []
         timeline = None
         try:
-            writer = RecordingWriter(path, fps, size)
-            timeline = RecordingTimeline(writer, fps)
+            # For Native mode, determine the dimensions from the FIRST real frame.
+            # Keep them constant across window moves, resize events and MP4 splits.
             with self._record_lock:
                 self._record_part = 1
                 self._record_path = path
-            if MSS_AVAILABLE:
+            if opts.get('area_mode') == 'Selected Window':
+                from wgc_window_capture import WindowCaptureSource
+                window_capture = WindowCaptureSource(opts['window_hwnd'])
+                window_capture.start()
+            elif MSS_AVAILABLE:
                 try:
-                    grabber = mss.mss()
+                    grabber = mss.MSS()
                 except Exception as exc:
                     logging.warning('mss unavailable: %s', exc)
             selected_idx, selected_bbox = 0, None
@@ -2000,7 +2370,11 @@ class ScreenshotApp:
                         break
                 begun = time.monotonic()
                 try:
-                    if opts.get('area_mode') == 'Custom Region':
+                    if opts.get('area_mode') == 'Selected Window':
+                        # Independent WGC HWND capture: never fall back to visible desktop
+                        # cropping (which would accidentally record another application's UI).
+                        img = window_capture.get_frame(timeout=6 if frames == 0 else 2)
+                    elif opts.get('area_mode') == 'Custom Region':
                         x, y, w, h = opts['region']
                         if grabber is not None:
                             grab = grabber.grab({'left': x, 'top': y, 'width': w, 'height': h})
@@ -2019,11 +2393,24 @@ class ScreenshotApp:
                             img = ImageGrab.grab(all_screens=True) if os.name == 'nt' else ImageGrab.grab()
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
+                    if size is None:
+                        # YUV420p and many MP4 encoders require even dimensions.
+                        size = ((img.width + 1) // 2 * 2, (img.height + 1) // 2 * 2)
                     if img.size != size:
-                        img.thumbnail(size, Image.Resampling.BILINEAR)
+                        if opts['resolution'] == 'Native':
+                            # Preserve native pixels whenever the target window changes size.
+                            # If enlarged, pad. If reduced, scale down only as required
+                            # to maintain constant encoded frame dimensions.
+                            if img.width > size[0] or img.height > size[1]:
+                                img.thumbnail(size, Image.Resampling.LANCZOS)
+                        else:
+                            img.thumbnail(size, Image.Resampling.LANCZOS)
                         background = Image.new('RGB', size, (0, 0, 0))
                         background.paste(img, ((size[0] - img.width)//2, (size[1] - img.height)//2))
                         img = background
+                    if writer is None:
+                        writer = RecordingWriter(path, fps, size)
+                        timeline = RecordingTimeline(writer, fps)
                     added = timeline.write(np.asarray(img), time.monotonic())
                     frames += added
                     part_frames += added
@@ -2098,6 +2485,11 @@ class ScreenshotApp:
             problem = str(exc)
             logging.exception('Recording stopped with error')
         finally:
+            if window_capture is not None:
+                try:
+                    window_capture.close()
+                except Exception:
+                    logging.exception('Failed to close WGC window capture')
             if grabber is not None:
                 try:
                     grabber.close()
