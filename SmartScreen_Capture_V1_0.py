@@ -260,7 +260,7 @@ class ScreenshotApp:
     FK_KEYS = [f"F{i}" for i in range(1, 13)]
 
     ABOUT_TEXT = (
-        "SmartScreen Capture & Recording — v1.0 (build 1.0.6)\n\n"
+        "SmartScreen Capture & Recording — v1.0 (build 1.0.7)\n\n"
         "Fast, configurable screenshot capture tool.\n\n"
         "- Double-press triggers: Ctrl x 2 | Shift x 2 | F1–F12 x 2\n"
         "For global hotkeys to work reliably on Windows, run the program as Administrator.\n\n\n"
@@ -489,6 +489,7 @@ class ScreenshotApp:
         row=ttk.Frame(left,style="Panel.TFrame");row.grid(row=r,column=0,sticky="ew",pady=(0,3));r+=1
         ttk.Button(row,text="Check Recorder",command=self.check_recording).pack(side="left",padx=(0,10))
         ttk.Button(row,text="Save Config",command=self.save_config).pack(side="left",padx=(0,10))
+        ttk.Button(row,text="Edit Video…",command=self.open_video_editor).pack(side="left")
         ttk.Checkbutton(left,text="Minimize before capture / recording",
                         variable=self.hide_during_capture_var).grid(row=r,column=0,sticky="w",pady=(0,2));r+=1
 
@@ -596,8 +597,10 @@ class ScreenshotApp:
     def _try_start_update(self):
         if self._closing or self._update_stage is None:
             return
+        editor = getattr(self, '_video_editor', None)
         busy = (self._recording or self._screenshot_running or
                 self._video_countdown_job is not None or
+                (editor is not None and editor.window.winfo_exists()) or
                 (self._record_thread is not None and self._record_thread.is_alive()))
         if busy:
             # Defer until safe, rather than interrupt machine troubleshooting.
@@ -612,6 +615,22 @@ class ScreenshotApp:
         except Exception as exc:
             logging.exception('Unable to launch external updater')
             self._set_status('Auto-update postponed: ' + str(exc), error=True)
+
+    def open_video_editor(self):
+        recorder = getattr(self, '_record_thread', None)
+        if self._recording or (recorder is not None and recorder.is_alive()) or self._video_countdown_job is not None or self._screenshot_running or getattr(self, '_selection_active', False):
+            self._set_status('Finish capture or recording before editing videos.')
+            return
+        editor = getattr(self, '_video_editor', None)
+        if editor is not None and editor.window.winfo_exists():
+            editor.window.lift()
+            return
+        executable = ffmpeg_executable()
+        if not executable:
+            messagebox.showerror('Edit Video', 'FFmpeg is required for video editing.', parent=self.root)
+            return
+        from video_editor import VideoEditor
+        self._video_editor = VideoEditor(self.root, executable)
 
     def _update_quality_label(self):
         """Reflect resolution/FPS changes in the main-panel summary."""
@@ -1003,6 +1022,10 @@ class ScreenshotApp:
     def capture_now(self):
         # The GUI is minimized before capture, avoiding a screenshot of this application.
         # Delay also gives operators a chance to bring the equipment HMI to the front.
+        editor = getattr(self, '_video_editor', None)
+        if editor is not None and editor.window.winfo_exists():
+            self._set_status('Close the video editor before taking screenshots.')
+            return
         if getattr(self, '_selection_active', False):
             self._set_status('Finish or cancel the current selection first.')
             return
@@ -1569,6 +1592,11 @@ class ScreenshotApp:
             pass
 
     def _on_close(self):
+        editor = getattr(self, '_video_editor', None)
+        if editor is not None and editor.window.winfo_exists():
+            editor.window.lift()
+            self._set_status('Close the video editor before exiting SmartScreen.')
+            return
         if self._video_countdown_job is not None:
             self.root.after_cancel(self._video_countdown_job)
             self._video_countdown_job = None
@@ -2166,6 +2194,10 @@ class ScreenshotApp:
         self._post_gui(messagebox.showinfo, 'Recording Compatibility', result)
 
     def start_recording(self):
+        editor = getattr(self, '_video_editor', None)
+        if editor is not None and editor.window.winfo_exists():
+            self._set_status('Close the video editor before recording.')
+            return
         if getattr(self, '_selection_active', False):
             self._set_status('Finish or cancel the current selection first.')
             return

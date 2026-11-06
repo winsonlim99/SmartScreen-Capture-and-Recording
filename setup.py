@@ -16,7 +16,7 @@ from build_paths import BUILD, BUILD_WORK, METADATA
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "SmartScreen Capture & Recording"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 SOURCE = ROOT / "SmartScreen_Capture_V1_0.py"
 ICON = ROOT / "assets" / "ASC_Logo.ico"
 
@@ -81,7 +81,7 @@ include_files = [
 build_options = {
     "packages": [
         "tkinter", "PIL", "keyboard", "mss", "numpy",
-        "imageio", "smart_update", "wgc_window_capture",
+        "imageio", "smart_update", "wgc_window_capture", "video_editor", "video_editing",
     ],
     "includes": ["PIL.ImageTk", "mss.tools", "imageio.plugins.ffmpeg", "smart_update"],
     "include_files": include_files,
