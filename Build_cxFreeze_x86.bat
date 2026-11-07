@@ -16,7 +16,7 @@ if not exist "ffmpeg\ffmpeg.exe" (
 )
 "%PY32%" -m pip install --upgrade pip
 if errorlevel 1 goto :fail
-"%PY32%" -m pip install cx_Freeze pillow keyboard mss numpy imageio
+"%PY32%" -m pip install cx_Freeze pillow keyboard mss numpy imageio tkinterdnd2==0.4.3
 if errorlevel 1 goto :fail
 REM Optional dependencies must not stop an x86 build when wheels do not exist.
 "%PY32%" -m pip install imageio-ffmpeg

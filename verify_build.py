@@ -37,4 +37,15 @@ else:
 # Detect packaged DLL references only by existence; do not mix x86 and x64 installations.
 for f in (build/'lib'/'numpy.libs').glob('*.dll'):
     print('Verified:',f.name, f.stat().st_size, 'bytes')
+# Detect omitted editor native assets before distributing a frozen build.
+dnd = build/'lib'/'tkinterdnd2'/'tkdnd'/('win-x86' if arch=='x86' else 'win-x64')
+if not (dnd/'pkgIndex.tcl').is_file() or not list(dnd.glob('*.dll')):
+    raise SystemExit(f'Drag-and-drop Tcl/DLL files missing: {dnd}')
+if arch == 'x64':
+    for library in ('ffmpeg', 'sdl'):
+        native = build/'share'/'ffpyplayer'/library/'bin'
+        if not list(native.glob('*.dll')):
+            raise SystemExit(f'Embedded player DLLs missing: {native}')
+    if not list((build/'lib'/'ffpyplayer'/'player').glob('player*.pyd')):
+        raise SystemExit('Embedded player Python extension missing from frozen build')
 print('Build verification complete:',exe)

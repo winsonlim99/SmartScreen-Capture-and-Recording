@@ -1,25 +1,34 @@
-"""Tk editor with seekable frame preview and background, cancellable export."""
+"""Nonmodal embedded player, native file drops and a draggable trim timeline."""
 import os
 from pathlib import Path
 import queue
-import subprocess
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from PIL import ImageTk
-from video_editing import Clip, EditCancelled, probe_video, preview_frame, export_video
+from video_editing import Clip, probe_video, export_video
+from video_playback import PreviewPlayer
+from video_timeline import VideoTimeline
 
 
 class VideoEditor:
     def __init__(self, parent, executable):
         self.executable = executable
         self.window = tk.Toplevel(parent)
-        self.window.title('Edit Video — Trim and Join')
+        self.window.title('Edit Video — Player, Trim and Join')
         self.window.geometry('900x740')
         self.window.minsize(760, 680)
-        self.window.transient(parent)
-        self.window.grab_set()
+        self.window.resizable(True, True)
+        # Independent toplevel: no modal grab/transient owner hiding or blocking
+        # the editor when switching to another Windows application.
+        self.player = PreviewPlayer(executable)
+        self.player_revision = 0
+        self.playing = False
+        self._seek_job = None
+        self._resize_job = None
+        self._display_image = None
+        self._selected_index = None
         self.clips = []
         self.infos = []
         self.busy = False
@@ -29,7 +38,8 @@ class VideoEditor:
         self.controls = []
         body = ttk.Frame(self.window, padding=12)
         body.pack(fill='both', expand=True)
-        ttk.Label(body, text='Add videos, set the section to keep, and export a new MP4. Originals stay unchanged.').pack(anchor='w')
+        self.drop_label = ttk.Label(body, text='Drop video files here or use Add videos. Originals stay unchanged.')
+        self.drop_label.pack(anchor='w')
         self.listbox = tk.Listbox(body, height=5, exportselection=False)
         self.listbox.pack(fill='x', pady=6)
         self.listbox.bind('<<ListboxSelect>>', self.select)
@@ -37,18 +47,30 @@ class VideoEditor:
         for title, command in [('Add videos', self.add), ('Remove', self.remove),
                                ('Move up', lambda: self.move(-1)), ('Move down', lambda: self.move(1))]:
             self.button(row, title, command).pack(side='left', padx=3)
-        preview_holder = ttk.Frame(body, height=240)
+        preview_holder = ttk.Frame(body, height=150)
         preview_holder.pack(fill='both', expand=True, pady=8)
         preview_holder.pack_propagate(False)
         self.preview = ttk.Label(preview_holder, text='Select a video to preview a frame.', anchor='center')
         self.preview.pack(fill='both', expand=True)
+        self.preview.bind('<Configure>', self.resize_preview)
         self.position = tk.DoubleVar(value=0)
-        self.seek = ttk.Scale(body, variable=self.position, from_=0, to=1)
-        self.seek.pack(fill='x')
-        self.controls.append(self.seek)
+        self.timeline = VideoTimeline(body, self.scrub, self.select_range)
+        self.timeline.pack(fill='x')
+        self.timeline.enabled = False
+        self.clock = tk.StringVar(value='0.000 / 0.000 sec')
+        ttk.Label(body, textvariable=self.clock).pack(anchor='w')
         row = ttk.Frame(body); row.pack(fill='x', pady=4)
-        self.button(row, 'Preview frame at slider', self.preview_at_position).pack(side='left')
-        self.button(row, 'Play original in player', self.play_original).pack(side='left', padx=5)
+        self.play_button = self.button(row, 'Play selection', self.toggle_play)
+        self.play_button.pack(side='left')
+        self.button(row, '◀ Frame', lambda: self.step_frame(-1)).pack(side='left', padx=3)
+        self.button(row, 'Frame ▶', lambda: self.step_frame(1)).pack(side='left', padx=3)
+        ttk.Label(row, text='Volume').pack(side='left', padx=(10, 3))
+        self.volume = tk.DoubleVar(value=1)
+        self.volume_control = ttk.Scale(row, from_=0, to=1, variable=self.volume,
+                                        command=lambda value: self.change_volume())
+        self.volume_control.pack(side='left', fill='x', expand=True)
+        self.controls.append(self.volume_control)
+        self.button(row, 'Maximize / Restore', self.toggle_maximize).pack(side='right')
         row = ttk.Frame(body); row.pack(fill='x', pady=4)
         self.start = tk.StringVar(value='0'); self.end = tk.StringVar(value='0')
         self.tail = tk.StringVar(value='5')
@@ -79,12 +101,47 @@ class VideoEditor:
         self.status = tk.StringVar(value='Trim one video, or add several to join in list order. Audio is retained.')
         ttk.Label(body, textvariable=self.status, wraplength=850).pack(fill='x', pady=8)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
-        self.window.after(80, self.poll)
+        self.enable_drop()
+        self.window.after(20, self.poll)
 
     def button(self, parent, title, command):
         button = ttk.Button(parent, text=title, command=command)
         self.controls.append(button)
         return button
+
+    def enable_drop(self):
+        try:
+            from tkinterdnd2 import DND_FILES, TkinterDnD
+            TkinterDnD._require(self.window)
+            for widget in (self.window, self.listbox, self.preview, self.drop_label):
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind('<<Drop>>', self.drop_files)
+        except (ImportError, tk.TclError, RuntimeError) as exc:
+            self.drop_label.configure(text='File drop unavailable; use Add videos. Rebuild with tkinterdnd2.')
+            self.status.set(f'Drag-and-drop could not initialize: {exc}')
+
+    def drop_files(self, event):
+        if self.busy or self.closing:
+            self.status.set('Finish or cancel the current operation before adding files.')
+            return 'refuse_drop'
+        try:
+            paths = self.window.tk.splitlist(event.data)
+            if not paths or not all(Path(path).is_file() for path in paths):
+                raise ValueError('Drop local video files, not folders.')
+            self.add_paths(paths)
+            return 'copy'
+        except (ValueError, tk.TclError) as exc:
+            self.status.set(str(exc))
+            return 'refuse_drop'
+
+    def toggle_maximize(self):
+        try:
+            self.window.state('normal' if self.window.state() == 'zoomed' else 'zoomed')
+        except tk.TclError:
+            try:
+                self.window.attributes('-zoomed', not self.window.attributes('-zoomed'))
+            except tk.TclError:
+                self.status.set('Use your window manager maximize button.')
 
     def index(self):
         selection = self.listbox.curselection()
@@ -100,6 +157,13 @@ class VideoEditor:
             self.listbox.selection_set(min(selected, len(self.clips)-1))
             self.select(preview=preview)
         else:
+            self._selected_index = None
+            self.pause_player()
+            self.player_revision = self.player.request(path=None, position=0, playing=False)
+            self._display_image = None
+            self.timeline.enabled = False
+            self.timeline.set_values(1, 0, 1, 0)
+            self.clock.set('0.000 / 0.000 sec')
             self.preview.configure(image='', text='Add a video to begin.')
             self.preview.image = None
             self.start.set('0'); self.end.set('0')
@@ -109,10 +173,19 @@ class VideoEditor:
             return
         try:
             i = self.index()
+            if event is not None and i == self._selected_index:
+                return
+            if i != self._selected_index:
+                self._display_image = None
+                self.preview.configure(image='', text='Loading preview…')
+                self.preview.image = None
+            self._selected_index = i
+            self.timeline.enabled = True
             clip = self.clips[i]
             self.start.set(f'{clip.start:.3f}'); self.end.set(f'{clip.end:.3f}')
-            self.seek.configure(to=max(0, self.infos[i].duration - 0.1))
+            self.pause_player()
             self.position.set(clip.start)
+            self.update_timeline()
             if preview:
                 self.preview_at_position()
         except ValueError as exc:
@@ -121,7 +194,9 @@ class VideoEditor:
     def task(self, work, done):
         if self.busy:
             return
+        self.pause_player()
         self.busy = True; self.cancel.clear()
+        self.timeline.enabled = False
         for control in self.controls:
             control.state(['disabled'])
         self.listbox.configure(state='disabled')
@@ -141,6 +216,7 @@ class VideoEditor:
                     self.status.set(value)
                     continue
                 self.busy = False
+                self.timeline.enabled = bool(self.clips)
                 for control in self.controls:
                     control.state(['!disabled'])
                 self.listbox.configure(state='normal')
@@ -148,19 +224,56 @@ class VideoEditor:
                 if not self.closing:
                     if kind == 'done':
                         callback, result = value
-                        callback(result)
+                        try:
+                            callback(result)
+                        except Exception as exc:
+                            self.status.set(f'Operation completed but the display could not update: {exc}')
                     else:
                         self.status.set(value)
         except queue.Empty:
             pass
-        if self.closing and not self.busy:
+        try:
+            revision, kind, payload = self.player.frames.get_nowait()
+            if revision == self.player_revision and not self.closing:
+                if kind == 'frame':
+                    image, position = payload
+                    self.position.set(position)
+                    self._display_image = image
+                    self.render_image()
+                    self.update_timeline()
+                elif kind == 'ended':
+                    self.playing = False
+                    self.play_button.configure(text='Play selection')
+                    self.status.set('Reached the selected end. Original file is unchanged.')
+                else:
+                    self.playing = False
+                    self.play_button.configure(text='Play selection')
+                    self.status.set(payload)
+        except queue.Empty:
+            pass
+        # A bounded video queue may replace the final "ended" notification with
+        # its paused boundary frame while the application is unfocused. Reconcile
+        # transport state independently so the Pause button cannot get stuck.
+        state = self.player.snapshot()
+        if self.playing and not state['playing']:
+            self.playing = False
+            self.play_button.configure(text='Play selection')
+        if self.closing and not self.busy and not self.player.thread.is_alive():
             self.window.destroy()
             return
-        self.window.after(80, self.poll)
+        self.window.after(20, self.poll)
 
     def add(self):
         paths = filedialog.askopenfilenames(parent=self.window, title='Add videos in join order',
                                            filetypes=[('Video files', '*.mp4 *.mkv *.avi *.mov *.wmv'), ('All files', '*.*')])
+        if not paths:
+            return
+        self.add_paths(paths)
+
+    def add_paths(self, paths):
+        if self.busy or self.closing:
+            return
+        paths = tuple(paths)
         if not paths:
             return
         def work():
@@ -176,31 +289,108 @@ class VideoEditor:
         self.status.set('Reading video information…')
         self.task(work, done)
 
-    def preview_at_position(self):
-        if self.busy:
+    def update_timeline(self):
+        if not self.clips:
             return
         try:
-            clip = self.clips[self.index()]
-            position = min(max(0, self.position.get()), max(0, self.infos[self.index()].duration - 0.1))
-        except (ValueError, IndexError, tk.TclError) as exc:
-            self.status.set(str(exc)); return
-        def done(image):
-            image.thumbnail((640, 240))
-            photo = ImageTk.PhotoImage(image)
-            self.preview.configure(image=photo, text='')
-            self.preview.image = photo
-            self.status.set(f'Preview position: {position:.3f} sec. Export keeps the applied range.')
-        self.task(lambda: preview_frame(self.executable, clip.path, position, self.cancel), done)
+            i = self.index(); clip = self.clips[i]; info = self.infos[i]
+            self.timeline.set_values(info.duration, clip.start, clip.end, self.position.get(), info.fps)
+            self.clock.set(f'{self.position.get():.3f} / {info.duration:.3f} sec   |   Keep {clip.start:.3f} – {clip.end:.3f}')
+        except ValueError:
+            pass
 
-    def play_original(self):
+    def preview_at_position(self):
+        if self.busy or not self.clips or self.closing:
+            return
         try:
-            path = self.clips[self.index()].path
-            if os.name == 'nt':
-                os.startfile(path)
-            else:
-                subprocess.Popen(['xdg-open', path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except (ValueError, OSError) as exc:
+            i = self.index(); info = self.infos[i]
+            position = min(max(0, self.position.get()), max(0, info.duration - 1/max(1, info.fps)))
+            self.pause_player()
+            self.player_revision = self.player.request(path=self.clips[i].path, position=position,
+                                                       end=self.clips[i].end, playing=False)
+        except (ValueError, tk.TclError) as exc:
             self.status.set(str(exc))
+
+    def pause_player(self):
+        self.playing = False
+        self.play_button.configure(text='Play selection')
+        self.player_revision = self.player.request(playing=False, position=self.position.get())
+
+    def toggle_play(self):
+        if self.busy or not self.clips:
+            return
+        if self.playing:
+            self.pause_player()
+            return
+        if not self.apply_range(preview=False):
+            return
+        i = self.index(); clip = self.clips[i]
+        position = self.position.get()
+        if not clip.start <= position < clip.end - 1/max(1, self.infos[i].fps):
+            position = clip.start
+        self.playing = True
+        self.play_button.configure(text='Pause')
+        width = max(160, min(1280, self.preview.winfo_width())) // 8 * 8
+        self.player_revision = self.player.request(path=clip.path, position=position, end=clip.end,
+                                    playing=True, volume=self.volume.get(), width=width)
+        self.status.set('Playing selected range inside SmartScreen.')
+
+    def change_volume(self):
+        self.player_revision = self.player.request(volume=self.volume.get())
+
+    def step_frame(self, direction):
+        if not self.clips or self.busy:
+            return
+        self.scrub(self.position.get() + direction / max(1, self.infos[self.index()].fps))
+
+    def scrub(self, position):
+        if self.busy or not self.clips:
+            return
+        self.pause_player()
+        info = self.infos[self.index()]
+        self.position.set(max(0, min(position, max(0, info.duration-1/max(1, info.fps)))))
+        self.update_timeline()
+        if self._seek_job is not None:
+            self.window.after_cancel(self._seek_job)
+        self._seek_job = self.window.after(70, self.finish_scrub)
+
+    def finish_scrub(self):
+        self._seek_job = None
+        self.preview_at_position()
+
+    def select_range(self, start, end, position):
+        if self.busy:
+            return
+        i = self.index()
+        self.clips[i] = Clip(self.clips[i].path, start, end)
+        self.start.set(f'{start:.6f}'); self.end.set(f'{end:.6f}')
+        self.listbox.delete(i)
+        self.listbox.insert(i, f'{Path(self.clips[i].path).name}   |   keep {start:.3f} – {end:.3f} sec')
+        self.listbox.selection_clear(0, 'end')
+        self.listbox.selection_set(i)
+        self.scrub(position)
+
+    def resize_preview(self, event=None):
+        if self._resize_job is not None:
+            self.window.after_cancel(self._resize_job)
+        self._resize_job = self.window.after(60, self.finish_resize)
+
+    def finish_resize(self):
+        self._resize_job = None
+        if not self.closing:
+            if self.playing:
+                width = max(160, min(1280, self.preview.winfo_width())) // 8 * 8
+                self.player_revision = self.player.request(width=width)
+            self.render_image()
+
+    def render_image(self):
+        if self._display_image is None:
+            return
+        image = self._display_image.copy()
+        image.thumbnail((max(1, self.preview.winfo_width()), max(1, self.preview.winfo_height())))
+        photo = ImageTk.PhotoImage(image)
+        self.preview.configure(image=photo, text='')
+        self.preview.image = photo
 
     def apply_range(self, preview=True):
         try:
@@ -208,8 +398,13 @@ class VideoEditor:
             start, end = float(self.start.get()), float(self.end.get())
             if not 0 <= start < end <= self.infos[i].duration:
                 raise ValueError('Enter 0 ≤ start < end ≤ original duration.')
+            position = self.position.get()
             self.clips[i] = Clip(self.clips[i].path, start, end)
-            self.refresh(i, preview=preview)
+            self.refresh(i, preview=False)
+            self.position.set(max(start, min(position, end)))
+            self.update_timeline()
+            if preview:
+                self.preview_at_position()
             return True
         except (ValueError, tk.TclError) as exc:
             self.status.set(str(exc)); return False
@@ -274,3 +469,7 @@ class VideoEditor:
                 return
             self.cancel.set()
         self.closing = True
+        for job in (self._seek_job, self._resize_job):
+            if job is not None:
+                self.window.after_cancel(job)
+        self.player.close()

@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-APP_VERSION = '1.0.7'
+APP_VERSION = '1.0.8'
 EXE_NAME = 'SmartScreen_Capture.exe'
 PROTECTED = {'config.json', 'update_source.txt', 'capture_v10.log'}
 MAX_FILES = 12000

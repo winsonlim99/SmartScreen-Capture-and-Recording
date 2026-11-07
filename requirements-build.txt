@@ -1,3 +1,4 @@
+# x64 build dependencies. For x86 use Build_cxFreeze_x86.bat.
 cx_Freeze>=7
 pillow
 keyboard
@@ -6,3 +7,6 @@ numpy
 imageio
 imageio-ffmpeg
 opencv-python
+
+tkinterdnd2==0.4.3
+ffpyplayer==4.5.3

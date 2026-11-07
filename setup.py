@@ -16,7 +16,7 @@ from build_paths import BUILD, BUILD_WORK, METADATA
 
 ROOT = Path(__file__).resolve().parent
 APP_NAME = "SmartScreen Capture & Recording"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 SOURCE = ROOT / "SmartScreen_Capture_V1_0.py"
 ICON = ROOT / "assets" / "ASC_Logo.ico"
 
@@ -78,10 +78,25 @@ include_files = [
     (str(ROOT / "updater"), "updater"),
 ]
 
+# Tk drag-and-drop uses native Tcl/DLL files that package discovery alone may
+# omit. Preserve the package-relative directory used by tkinterdnd2._require.
+import tkinterdnd2
+import tkinter
+if tkinter.TclVersion >= 9:
+    raise SystemExit('The bundled drag-and-drop extension requires Tcl/Tk 8.6. Use the supported Windows Python 3.13 installer with Tcl/Tk 8.6.')
+include_files.append((str(Path(tkinterdnd2.__file__).parent / 'tkdnd'),
+                      'lib/tkinterdnd2/tkdnd'))
+if not IS_X86:
+    import ffpyplayer
+    from ffpyplayer.player import MediaPlayer  # fail build if native dependencies cannot load
+    for directory in ffpyplayer.dep_bins:
+        native = Path(directory)
+        include_files.append((str(native), 'share/ffpyplayer/' + native.parent.name + '/bin'))
+
 build_options = {
     "packages": [
         "tkinter", "PIL", "keyboard", "mss", "numpy",
-        "imageio", "smart_update", "wgc_window_capture", "video_editor", "video_editing",
+        "imageio", "smart_update", "wgc_window_capture", "video_editor", "video_editing", "video_playback", "video_timeline", "tkinterdnd2",
     ],
     "includes": ["PIL.ImageTk", "mss.tools", "imageio.plugins.ffmpeg", "smart_update"],
     "include_files": include_files,
@@ -91,6 +106,13 @@ build_options = {
     "zip_exclude_packages": ["*"],
     "build_exe": str(BUILD),
 }
+
+if not IS_X86:
+    build_options['packages'].append('ffpyplayer')
+    build_options['includes'].append('ffpyplayer.player')
+else:
+    # No Python 3.13 win32 ffpyplayer wheel: retain trim/join and frame preview.
+    build_options['excludes'].append('ffpyplayer')
 
 # OpenCV and the imageio-ffmpeg Python helper are optional; recording can use
 # imageio and the verified bundled ffmpeg executable directly.

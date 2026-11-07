@@ -260,7 +260,7 @@ class ScreenshotApp:
     FK_KEYS = [f"F{i}" for i in range(1, 13)]
 
     ABOUT_TEXT = (
-        "SmartScreen Capture & Recording — v1.0 (build 1.0.7)\n\n"
+        "SmartScreen Capture & Recording — v1.0 (build 1.0.8)\n\n"
         "Fast, configurable screenshot capture tool.\n\n"
         "- Double-press triggers: Ctrl x 2 | Shift x 2 | F1–F12 x 2\n"
         "For global hotkeys to work reliably on Windows, run the program as Administrator.\n\n\n"

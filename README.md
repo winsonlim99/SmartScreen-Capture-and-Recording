@@ -1,8 +1,9 @@
 # SmartScreen Capture and Recording
 
 Windows desktop screenshot and MP4 recording utility. Current source: build
-1.0.7, based on the supplied 1.0.5 WGC/window-selection archive.
-See [Edit Video: trim and join](README_Video_Editor_1_0_7.md) for the new editor.
+1.0.8, based on the supplied 1.0.5 WGC/window-selection archive.
+See [embedded player, drag-and-drop and timeline](README_Editor_Player_1_0_8.md)
+for the upgraded editor and supported build requirements.
 See [selector fix and validation](README_Selector_Fix_1_0_6.md).
 For the `.egg-info` directory build error, see the
 [metadata build fix](README_Build_Metadata_Fix.md).
